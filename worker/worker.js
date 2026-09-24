@@ -61,7 +61,6 @@ async function runWorker() {
   await initializeDatabase();
 
   console.log("Fetching cookies from Supabase...");
-  // 1. Fetch cookies from Supabase
   const { data, error } = await supabase
     .from('auth_sessions')
     .select('cookies_json')
@@ -69,19 +68,52 @@ async function runWorker() {
     .single();
 
   if (error || !data || !data.cookies_json) {
-    console.error("Could not find session cookies in Supabase. Please add them via the /admin page first.");
+    console.error("Could not find session cookies. Please add them via the /admin page first.");
     process.exit(1);
   }
-
-  const cookies = typeof data.cookies_json === 'string' ? JSON.parse(data.cookies_json) : data.cookies_json;
+  const sessionData = typeof data.cookies_json === 'string' ? JSON.parse(data.cookies_json) : data.cookies_json;
 
   console.log("Launching browser...");
   // Launch headless:false so you can watch it work locally
   const browser = await chromium.launch({ headless: false }); 
-  const context = await browser.newContext();
   
-  // Load the cookies into the browser context
-  await context.addCookies(cookies);
+  let context;
+  
+  if (!Array.isArray(sessionData) && sessionData.cookies) {
+    // Native Playwright state.json object
+    console.log("Injecting full Playwright state (Cookies + LocalStorage) from Supabase...");
+    context = await browser.newContext({ storageState: sessionData });
+  } else {
+    // EditThisCookie array method
+    console.log("Injecting raw cookies array. Sanitizing...");
+    const cookiesArray = Array.isArray(sessionData) ? sessionData : [];
+    const sanitizedCookies = cookiesArray.map(c => {
+      const sanitized = {
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        httpOnly: c.httpOnly,
+        secure: c.secure,
+      };
+
+      // EditThisCookie uses expirationDate, Playwright uses expires
+      if (c.expirationDate) sanitized.expires = c.expirationDate;
+
+      let sameSite = c.sameSite;
+      if (typeof sameSite === 'string') {
+        const lower = sameSite.toLowerCase();
+        if (lower === 'no_restriction' || lower === 'none' || lower === 'unspecified') sameSite = 'None';
+        else if (lower === 'lax') sameSite = 'Lax';
+        else if (lower === 'strict') sameSite = 'Strict';
+      }
+      if (sameSite) sanitized.sameSite = sameSite;
+      
+      return sanitized;
+    });
+    context = await browser.newContext();
+    await context.addCookies(sanitizedCookies);
+  }
 
   const page = await context.newPage();
 
@@ -117,22 +149,47 @@ async function runWorker() {
       // Update status to 'processing' so we don't pick it up again
       await supabase.from('story_messages').update({ status: 'processing' }).eq('id', pendingMessage.id);
 
+      // Count responses before sending so we know exactly when the NEW one appears
+      const preSendElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
+      const expectedResponseCount = preSendElements.length + 1;
+
       // Type and Send
       await page.fill(inputSelector, pendingMessage.content);
       await page.keyboard.press('Enter');
       console.log('Sent to Gemini. Waiting for response...');
 
-      // Wait for generation to finish (waiting for network idle is a simple heuristic)
-      await page.waitForLoadState('networkidle');
-      // Adding a buffer to ensure DOM text rendering is complete
-      await page.waitForTimeout(5000); 
+      // Wait for generation to finish using text stabilization
+      let lastText = "";
+      let stableCount = 0;
+      
+      // Wait up to 60 seconds for the response to finish streaming
+      for (let i = 0; i < 240; i++) { // 240 iterations * 250ms = 60 seconds
+        await page.waitForTimeout(250);
+        const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
+        
+        // Only start checking text if the NEW response has been added to the DOM!
+        if (responseElements.length >= expectedResponseCount) {
+          const currentText = await responseElements[responseElements.length - 1].innerText();
+          if (currentText && currentText === lastText) {
+            stableCount++;
+            // If the text hasn't changed for 1 second (4 * 250ms), we assume Gemini is done typing
+            if (stableCount >= 4) break; 
+          } else {
+            lastText = currentText;
+            stableCount = 0;
+          }
+        }
+      }
 
       // Extract the last response. 
       const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]'); 
       
       if (responseElements.length > 0) {
         const lastResponse = responseElements[responseElements.length - 1];
-        const responseText = await lastResponse.innerText();
+        let responseText = await lastResponse.innerText();
+        
+        // Strip out hidden screen-reader text that Google prepends
+        responseText = responseText.replace(/^Gemini said\s*/i, '').trim();
         
         console.log(`Gemini Replied: ${responseText.substring(0, 100)}...`);
         
@@ -153,8 +210,8 @@ async function runWorker() {
       }
     }
     
-    // Poll every 3 seconds
-    await page.waitForTimeout(3000); 
+    // Poll every 1 second
+    await page.waitForTimeout(1000); 
   }
 }
 

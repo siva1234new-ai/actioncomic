@@ -12,8 +12,8 @@ export default function ChatPage() {
     // Initial fetch
     fetchMessages();
     
-    // Poll for new messages every 3 seconds
-    const interval = setInterval(fetchMessages, 3000);
+    // Poll for new messages every 1 second
+    const interval = setInterval(fetchMessages, 1000);
     return () => clearInterval(interval);
   }, []);
 
