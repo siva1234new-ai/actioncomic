@@ -55,36 +55,17 @@ export default function ChatPage() {
     setInput('');
     setIsSending(true);
     
-    // Add user message optimistically to UI
-    setMessages(prev => [...prev, { role: 'user', content: currentInput, status: 'completed' }, { role: 'assistant', content: '', status: 'processing' }]);
-
-    try {
-      const response = await fetch('http://localhost:4000/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: currentInput })
-      });
-      
-      const data = await response.json();
-      
-      if (response.ok) {
-        // Update the 'processing' message with the actual reply
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[newMessages.length - 1] = { role: 'assistant', content: data.reply, status: 'completed' };
-          return newMessages;
-        });
-        
-        // Asynchronously sync with Supabase to ensure consistency
-        fetchMessages();
-      } else {
-        alert("Error from worker: " + data.error);
-        // Remove the loading message if it failed
-        setMessages(prev => prev.slice(0, -1));
-      }
-    } catch (err) {
-      alert("Failed to connect to local worker. Is it running on port 4000?");
-      setMessages(prev => prev.slice(0, -1));
+    const { error } = await supabase.from('story_messages').insert({
+      role: 'user',
+      content: currentInput,
+      status: 'pending'
+    });
+    
+    if (!error) {
+      // The Realtime subscription will automatically trigger fetchMessages() 
+      // and update the UI when the backend changes status to 'processing' or 'completed'
+    } else {
+      alert("Error saving message: " + error.message);
     }
     
     setIsSending(false);

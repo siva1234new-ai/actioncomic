@@ -2,8 +2,6 @@ require('dotenv').config();
 const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
 const { Client } = require('pg'); // Direct Postgres client for creating tables
-const express = require('express');
-const cors = require('cors');
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
@@ -54,9 +52,18 @@ async function initializeDatabase() {
       CREATE TABLE IF NOT EXISTS auth_sessions (
         id INT PRIMARY KEY DEFAULT 1,
         cookies_json JSONB NOT NULL,
+        conversation_url TEXT,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
     `);
+    
+    // Attempt to add the column if the table was created previously
+    try {
+      await client.query(`ALTER TABLE auth_sessions ADD COLUMN conversation_url TEXT;`);
+      console.log("Added conversation_url column to auth_sessions.");
+    } catch (e) {
+      // Ignore if it already exists
+    }
     
     console.log("✅ Tables are ready.");
   } catch (err) {
@@ -69,11 +76,41 @@ async function initializeDatabase() {
 async function runWorker() {
   // First, ensure tables exist
   await initializeDatabase();
+  
+  // Read JOB_ID from environment or command line argument (e.g. `node worker.js 123`)
+  const jobId = process.env.JOB_ID || process.argv[2];
+  
+  let pendingMessage;
+  
+  if (jobId) {
+    console.log(`Fetching specific job: ${jobId}`);
+    const { data } = await supabase.from('story_messages').select('*').eq('id', jobId).single();
+    pendingMessage = data;
+  } else {
+    console.log("No JOB_ID provided. Fetching oldest pending message...");
+    const { data } = await supabase
+      .from('story_messages')
+      .select('*')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+      .limit(1);
+    pendingMessage = data?.[0];
+  }
 
-  console.log("Fetching cookies from Supabase...");
+  if (!pendingMessage || pendingMessage.status !== 'pending') {
+    console.log("No pending jobs found. Exiting clean.");
+    process.exit(0);
+  }
+
+  console.log(`\nProcessing job ${pendingMessage.id}: "${pendingMessage.content}"`);
+  
+  // Instantly mark as processing to lock the job
+  await supabase.from('story_messages').update({ status: 'processing' }).eq('id', pendingMessage.id);
+
+  console.log("Fetching cookies and conversation URL from Supabase...");
   const { data, error } = await supabase
     .from('auth_sessions')
-    .select('cookies_json')
+    .select('cookies_json, conversation_url')
     .eq('id', 1)
     .single();
 
@@ -134,98 +171,92 @@ async function runWorker() {
 
   const page = await context.newPage();
 
-  console.log("Navigating to Gemini...");
-  await page.goto('https://gemini.google.com/app');
+  const targetUrl = data.conversation_url ? data.conversation_url : 'https://gemini.google.com/app';
+  console.log(`Navigating to Gemini: ${targetUrl}`);
+  await page.goto(targetUrl);
   
   // Wait for the rich-text editor for Gemini to appear
   const inputSelector = 'div[contenteditable="true"]';
   
   try {
     await page.waitForSelector(inputSelector, { timeout: 30000 });
-    console.log('Gemini loaded successfully! Worker is now polling Supabase...');
+    console.log('Gemini loaded. Waiting 3 seconds for old chat history to populate...');
+    await page.waitForTimeout(3000); // CRITICAL: Let existing chat history load before counting
+    console.log('Processing job...');
   } catch (e) {
     console.error("Timeout waiting for Gemini input box. Cookies might be expired or invalid.");
+    await supabase.from('story_messages').update({ status: 'failed' }).eq('id', pendingMessage.id);
     await browser.close();
     process.exit(1);
   }
-  
-  // Start Express API server
-  const app = express();
-  app.use(cors());
-  app.use(express.json());
 
-  app.post('/api/chat', async (req, res) => {
-    const { message } = req.body;
-    if (!message) return res.status(400).json({ error: "Message is required" });
+  try {
+    const preSendElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
+    const expectedResponseCount = preSendElements.length + 1;
 
-    console.log(`\nNew API message received: "${message}"`);
+    await page.fill(inputSelector, pendingMessage.content);
+    await page.keyboard.press('Enter');
+    console.log('Sent to Gemini. Waiting for response...');
+
+    let lastText = "";
+    let stableCount = 0;
     
-    // Asynchronously save user message to Supabase
-    supabase.from('story_messages').insert({
-      role: 'user',
-      content: message,
-      status: 'completed'
-    }).then();
-
-    try {
-      const preSendElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
-      const expectedResponseCount = preSendElements.length + 1;
-
-      await page.fill(inputSelector, message);
-      await page.keyboard.press('Enter');
-      console.log('Sent to Gemini. Waiting for response...');
-
-      let lastText = "";
-      let stableCount = 0;
+    // Increased timeout to 120 seconds for longer generation buffers
+    for (let i = 0; i < 1200; i++) {
+      await page.waitForTimeout(100);
+      const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
       
-      for (let i = 0; i < 600; i++) {
-        await page.waitForTimeout(100);
-        const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
+      if (responseElements.length >= expectedResponseCount) {
+        let currentText = await responseElements[responseElements.length - 1].innerText();
+        currentText = currentText.trim();
         
-        if (responseElements.length >= expectedResponseCount) {
-          let currentText = await responseElements[responseElements.length - 1].innerText();
-          currentText = currentText.trim();
-          
-          if (currentText.length > 0 && currentText === lastText) {
-            stableCount++;
-            if (stableCount >= 5) break; 
-          } else {
-            lastText = currentText;
-            stableCount = 0;
-          }
+        if (currentText.length > 0 && currentText === lastText) {
+          stableCount++;
+          if (stableCount >= 5) break; 
+        } else {
+          lastText = currentText;
+          stableCount = 0;
         }
       }
-
-      const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]'); 
-      if (responseElements.length > 0) {
-        let responseText = await responseElements[responseElements.length - 1].innerText();
-        responseText = responseText.replace(/^Gemini said\s*/i, '').trim();
-        
-        console.log(`Gemini Replied: ${responseText.substring(0, 100)}...`);
-        
-        // Asynchronously save assistant message to Supabase
-        supabase.from('story_messages').insert({
-          role: 'assistant',
-          content: responseText,
-          status: 'completed'
-        }).then();
-        
-        // Return instantly to frontend
-        res.json({ reply: responseText });
-      } else {
-        res.status(500).json({ error: "Could not find response element. Google might have changed the UI." });
-      }
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ error: e.message });
     }
-  });
 
-  const PORT = 4000;
-  app.listen(PORT, () => {
-    console.log(`\n🚀 Worker API running on http://localhost:${PORT}`);
-    console.log('Frontend can now bypass Supabase polling and call this API directly!');
-  });
+    const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]'); 
+    if (responseElements.length > 0) {
+      let responseText = await responseElements[responseElements.length - 1].innerText();
+      responseText = responseText.replace(/^Gemini said\s*/i, '').trim();
+      
+      console.log(`Gemini Replied: ${responseText.substring(0, 100)}...`);
+      
+      // Update original user message as completed
+      await supabase.from('story_messages').update({ status: 'completed' }).eq('id', pendingMessage.id);
+      
+      // Insert Assistant reply
+      await supabase.from('story_messages').insert({
+        role: 'assistant',
+        content: responseText,
+        status: 'completed'
+      });
+      
+      // Save the new conversation URL if it changed (Gemini redirects to /app/xxxxxx on new chat)
+      const currentUrl = page.url();
+      if (currentUrl !== targetUrl && currentUrl.includes('/app/')) {
+        console.log(`\nNew conversation URL detected! Saving to Supabase: ${currentUrl}`);
+        await supabase.from('auth_sessions').update({ conversation_url: currentUrl }).eq('id', 1);
+      }
+      
+      console.log("Job finished successfully. Exiting.");
+    } else {
+      console.log("Could not find response element. Google might have changed the UI.");
+      await supabase.from('story_messages').update({ status: 'failed' }).eq('id', pendingMessage.id);
+    }
+  } catch (e) {
+    console.error("Job failed with error:", e);
+    await supabase.from('story_messages').update({ status: 'failed' }).eq('id', pendingMessage.id);
+  }
+
+  // Close browser and completely kill the runner process
+  await browser.close();
+  process.exit(0);
 }
 
 runWorker().catch(console.error);

@@ -1,0 +1,37 @@
+name: Gemini Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'The ID of the pending job in Supabase'
+        required: true
+        type: string
+
+jobs:
+  process-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        working-directory: ./worker
+        run: npm ci || npm install
+
+      - name: Install Playwright Browsers
+        working-directory: ./worker
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Worker
+        working-directory: ./worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          JOB_ID: ${{ inputs.job_id }}
+        run: node worker.js
