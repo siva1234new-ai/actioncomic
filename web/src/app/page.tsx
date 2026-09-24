@@ -1,20 +1,42 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
   useEffect(() => {
     // Initial fetch
     fetchMessages();
     
-    // Poll for new messages every 1 second
-    const interval = setInterval(fetchMessages, 1000);
-    return () => clearInterval(interval);
+    // Subscribe to real-time database changes for absolute zero-latency updates!
+    const channel = supabase
+      .channel('schema-db-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'story_messages' },
+        (payload) => {
+          // Whenever the worker updates a message or inserts a new one, fetch instantly
+          fetchMessages(); 
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const fetchMessages = async () => {
@@ -29,17 +51,42 @@ export default function ChatPage() {
     e.preventDefault();
     if (!input.trim()) return;
     
+    const currentInput = input;
+    setInput('');
     setIsSending(true);
-    const { error } = await supabase.from('story_messages').insert({
-      role: 'user',
-      content: input,
-      status: 'pending'
-    });
     
-    if (!error) {
-      setInput('');
-      await fetchMessages();
+    // Add user message optimistically to UI
+    setMessages(prev => [...prev, { role: 'user', content: currentInput, status: 'completed' }, { role: 'assistant', content: '', status: 'processing' }]);
+
+    try {
+      const response = await fetch('http://localhost:4000/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: currentInput })
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok) {
+        // Update the 'processing' message with the actual reply
+        setMessages(prev => {
+          const newMessages = [...prev];
+          newMessages[newMessages.length - 1] = { role: 'assistant', content: data.reply, status: 'completed' };
+          return newMessages;
+        });
+        
+        // Asynchronously sync with Supabase to ensure consistency
+        fetchMessages();
+      } else {
+        alert("Error from worker: " + data.error);
+        // Remove the loading message if it failed
+        setMessages(prev => prev.slice(0, -1));
+      }
+    } catch (err) {
+      alert("Failed to connect to local worker. Is it running on port 4000?");
+      setMessages(prev => prev.slice(0, -1));
     }
+    
     setIsSending(false);
   };
 
@@ -67,6 +114,7 @@ export default function ChatPage() {
         {messages.length === 0 && (
           <div className="text-center text-gray-400 mt-10">No messages yet. Start the story!</div>
         )}
+        <div ref={messagesEndRef} />
       </div>
 
       <form onSubmit={sendMessage} className="flex gap-2">

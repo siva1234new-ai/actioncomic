@@ -2,6 +2,8 @@ require('dotenv').config();
 const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
 const { Client } = require('pg'); // Direct Postgres client for creating tables
+const express = require('express');
+const cors = require('cors');
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
@@ -39,6 +41,14 @@ async function initializeDatabase() {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
     `);
+    
+    // Enable Supabase Realtime for story_messages table so the frontend updates instantly
+    try {
+      await client.query(`ALTER PUBLICATION supabase_realtime ADD TABLE story_messages;`);
+      console.log("Enabled Supabase Realtime for story_messages.");
+    } catch (e) {
+      // It will throw an error if the table is already in the publication, which is fine
+    }
     
     await client.query(`
       CREATE TABLE IF NOT EXISTS auth_sessions (
@@ -85,7 +95,7 @@ async function runWorker() {
     context = await browser.newContext({ storageState: sessionData });
   } else {
     // EditThisCookie array method
-    console.log("Injecting raw cookies array. Sanitizing...");
+    console.log("Injecting raw cookies array. Converting to Playwright native state...");
     const cookiesArray = Array.isArray(sessionData) ? sessionData : [];
     const sanitizedCookies = cookiesArray.map(c => {
       const sanitized = {
@@ -111,8 +121,15 @@ async function runWorker() {
       
       return sanitized;
     });
-    context = await browser.newContext();
-    await context.addCookies(sanitizedCookies);
+
+    // Pass the cookies as a native storageState object instead of context.addCookies
+    // This is much more reliable and bypasses strict runtime URL matching bugs in addCookies
+    context = await browser.newContext({
+      storageState: {
+        cookies: sanitizedCookies,
+        origins: []
+      }
+    });
   }
 
   const page = await context.newPage();
@@ -132,48 +149,46 @@ async function runWorker() {
     process.exit(1);
   }
   
-  while (true) {
-    // Fetch oldest pending message
-    const { data: pendingMessages } = await supabase
-      .from('story_messages')
-      .select('*')
-      .eq('status', 'pending')
-      .order('created_at', { ascending: true })
-      .limit(1);
+  // Start Express API server
+  const app = express();
+  app.use(cors());
+  app.use(express.json());
 
-    const pendingMessage = pendingMessages?.[0];
+  app.post('/api/chat', async (req, res) => {
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: "Message is required" });
 
-    if (pendingMessage) {
-      console.log(`\nNew message found: "${pendingMessage.content}"`);
-      
-      // Update status to 'processing' so we don't pick it up again
-      await supabase.from('story_messages').update({ status: 'processing' }).eq('id', pendingMessage.id);
+    console.log(`\nNew API message received: "${message}"`);
+    
+    // Asynchronously save user message to Supabase
+    supabase.from('story_messages').insert({
+      role: 'user',
+      content: message,
+      status: 'completed'
+    }).then();
 
-      // Count responses before sending so we know exactly when the NEW one appears
+    try {
       const preSendElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
       const expectedResponseCount = preSendElements.length + 1;
 
-      // Type and Send
-      await page.fill(inputSelector, pendingMessage.content);
+      await page.fill(inputSelector, message);
       await page.keyboard.press('Enter');
       console.log('Sent to Gemini. Waiting for response...');
 
-      // Wait for generation to finish using text stabilization
       let lastText = "";
       let stableCount = 0;
       
-      // Wait up to 60 seconds for the response to finish streaming
-      for (let i = 0; i < 240; i++) { // 240 iterations * 250ms = 60 seconds
-        await page.waitForTimeout(250);
+      for (let i = 0; i < 600; i++) {
+        await page.waitForTimeout(100);
         const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
         
-        // Only start checking text if the NEW response has been added to the DOM!
         if (responseElements.length >= expectedResponseCount) {
-          const currentText = await responseElements[responseElements.length - 1].innerText();
-          if (currentText && currentText === lastText) {
+          let currentText = await responseElements[responseElements.length - 1].innerText();
+          currentText = currentText.trim();
+          
+          if (currentText.length > 0 && currentText === lastText) {
             stableCount++;
-            // If the text hasn't changed for 1 second (4 * 250ms), we assume Gemini is done typing
-            if (stableCount >= 4) break; 
+            if (stableCount >= 5) break; 
           } else {
             lastText = currentText;
             stableCount = 0;
@@ -181,38 +196,36 @@ async function runWorker() {
         }
       }
 
-      // Extract the last response. 
       const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]'); 
-      
       if (responseElements.length > 0) {
-        const lastResponse = responseElements[responseElements.length - 1];
-        let responseText = await lastResponse.innerText();
-        
-        // Strip out hidden screen-reader text that Google prepends
+        let responseText = await responseElements[responseElements.length - 1].innerText();
         responseText = responseText.replace(/^Gemini said\s*/i, '').trim();
         
         console.log(`Gemini Replied: ${responseText.substring(0, 100)}...`);
         
-        // Mark user message as completed
-        await supabase.from('story_messages').update({ status: 'completed' }).eq('id', pendingMessage.id);
-        
-        // Insert the Assistant's reply
-        await supabase.from('story_messages').insert({
+        // Asynchronously save assistant message to Supabase
+        supabase.from('story_messages').insert({
           role: 'assistant',
           content: responseText,
           status: 'completed'
-        });
+        }).then();
         
-        console.log("Supabase updated. Waiting for next message...");
+        // Return instantly to frontend
+        res.json({ reply: responseText });
       } else {
-        console.log("Could not find response element. Google might have changed the UI.");
-        await supabase.from('story_messages').update({ status: 'failed' }).eq('id', pendingMessage.id);
+        res.status(500).json({ error: "Could not find response element. Google might have changed the UI." });
       }
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: e.message });
     }
-    
-    // Poll every 1 second
-    await page.waitForTimeout(1000); 
-  }
+  });
+
+  const PORT = 4000;
+  app.listen(PORT, () => {
+    console.log(`\n🚀 Worker API running on http://localhost:${PORT}`);
+    console.log('Frontend can now bypass Supabase polling and call this API directly!');
+  });
 }
 
 runWorker().catch(console.error);
