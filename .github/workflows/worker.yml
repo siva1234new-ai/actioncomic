@@ -34,4 +34,4 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           JOB_ID: ${{ inputs.job_id }}
-        run: node worker.js
+        run: xvfb-run --auto-servernum -- node worker.js
