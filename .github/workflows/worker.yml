@@ -39,10 +39,10 @@ jobs:
           LAPTOP_IP="100.124.114.36" # <-- PLEASE REPLACE THIS WITH YOUR LAPTOP'S TAILSCALE IP
           MOBILE_IP="100.109.173.64"
           
-          if tailscale ping -c 1 $LAPTOP_IP; then
+          if tailscale ping -c 2 --until-direct=false $LAPTOP_IP | grep -i "pong"; then
             echo "Laptop is awake! Setting Laptop as Exit Node..."
             sudo tailscale set --exit-node=$LAPTOP_IP
-          elif tailscale ping -c 1 $MOBILE_IP; then
+          elif tailscale ping -c 2 --until-direct=false $MOBILE_IP | grep -i "pong"; then
             echo "Laptop unreachable. Falling back to Android Phone..."
             sudo tailscale set --exit-node=$MOBILE_IP
           else
