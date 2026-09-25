@@ -231,7 +231,7 @@ User's Pitch: `;
         
         if (currentText.length > 0 && currentText === lastText) {
           stableCount++;
-          if (stableCount >= 5) break; 
+          if (stableCount >= 30) break; // Wait for 3 seconds of zero changes before assuming it's done
         } else {
           lastText = currentText;
           stableCount = 0;
