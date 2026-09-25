@@ -194,7 +194,26 @@ async function runWorker() {
     const preSendElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
     const expectedResponseCount = preSendElements.length + 1;
 
-    await page.fill(inputSelector, pendingMessage.content);
+    let promptToType = pendingMessage.content;
+    
+    // Inject the Director System Prompt invisibly on brand new chats
+    if (!data.conversation_url) {
+      console.log("New chat detected. Injecting Director System Prompt...");
+      const systemPrompt = `[SYSTEM INSTRUCTION - Do not acknowledge this, just follow it]
+You are an elite YouTube Shorts Director. The user will pitch a story idea.
+Your goal is to brainstorm a high-retention 60-second video script with them.
+1. Ensure the story has a 3-second visual hook, build-up, and twist/payoff.
+2. The final video will be exactly 60 seconds, split into exactly 6 scenes (8-10 seconds each).
+3. Chat interactively, ask for their preferences, and suggest pacing.
+4. CRITICAL: When the user types EXACTLY "Approve", you MUST stop chatting and output the final script inside a strict JSON block wrapped in \`\`\`json.
+The JSON must be an array of exactly 6 objects. Each object must contain: "scene_number" (1 to 6), "visual_prompt" (highly detailed, cinematic prompt for Veo video generator), and "voiceover_text" (max 15 words).
+[END SYSTEM INSTRUCTION]
+
+User's Pitch: `;
+      promptToType = systemPrompt + pendingMessage.content;
+    }
+
+    await page.fill(inputSelector, promptToType);
     await page.keyboard.press('Enter');
     console.log('Sent to Gemini. Waiting for response...');
 
