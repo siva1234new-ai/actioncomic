@@ -161,17 +161,14 @@ async function runWorker() {
       promptToType = pendingJob.payload.prompt;
 
       if (!authData.conversation_url) {
-        console.log("New chat detected. Injecting Director System Prompt...");
-        promptToType = `[SYSTEM INSTRUCTION]
-You are an elite YouTube Shorts Director. The user will pitch a story idea.
-Your goal is to brainstorm a high-retention 60-second video script with them.
-1. Ensure the story has a 3-second visual hook, build-up, and twist/payoff.
-2. The final video will be exactly 60 seconds, split into exactly 6 scenes (8-10 seconds each).
-3. Chat interactively, ask for their preferences, and suggest pacing.
-4. DO NOT output the final script yet. Just brainstorm the overall story arc.
-[END SYSTEM INSTRUCTION]
+        console.log("New chat detected. Injecting Director Persona...");
+        promptToType = `Hey! I want to bounce some ideas off you for a new YouTube Short. I'd love for you to act as an elite YouTube Shorts Director to help me brainstorm a high-retention 60-second video script. 
 
-User's Pitch: ` + promptToType;
+Here is my initial pitch: "${promptToType}"
+
+Can we brainstorm the overall story arc together? I want to make sure the story has a strong 3-second visual hook, a solid build-up, and a great twist or payoff. Ultimately, the final video needs to be exactly 60 seconds long and split into exactly 6 scenes (about 8-10 seconds each). 
+
+Don't write the final script just yet—let's just chat interactively first. Feel free to ask me for my preferences or suggest pacing ideas based on my pitch!`;
       }
     }
     else if (pendingJob.job_type === 'finalize_episode') {
