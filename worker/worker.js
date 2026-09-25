@@ -152,9 +152,9 @@ User's Pitch: ` + promptToType;
       }
     }
     else if (pendingJob.job_type === 'finalize_episode') {
-      promptToType = `[SYSTEM AUTOMATION] We have finalized today's episode. 
-Please write a highly detailed summary of the finalized 6-scene story arc so another AI can use it as a system prompt to write the final scripts.
-Wrap your summary perfectly inside a Markdown block like this:
+      promptToType = `Awesome, I'm happy with this story arc! 
+Please write a highly detailed summary of this finalized 6-scene story arc so I can pass it to our scriptwriters.
+Please wrap your summary perfectly inside a Markdown block exactly like this:
 \`\`\`summary
 <insert summary here>
 \`\`\``;
