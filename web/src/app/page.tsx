@@ -120,16 +120,33 @@ function BrainstormTab({ episodeId }: { episodeId: number }) {
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [isWorkerBusy, setIsWorkerBusy] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchMessages();
-    const channel = supabase
+    checkWorkerStatus();
+    const channel1 = supabase
       .channel('story-chats-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'story_chats', filter: `episode_id=eq.${episodeId}` }, fetchMessages)
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+      
+    const channel2 = supabase
+      .channel('job-queue-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'job_queue' }, checkWorkerStatus)
+      .subscribe();
+      
+    return () => { 
+      supabase.removeChannel(channel1); 
+      supabase.removeChannel(channel2); 
+    };
   }, [episodeId]);
+
+  const checkWorkerStatus = async () => {
+    const { data } = await supabase.from('job_queue').select('*').in('status', ['pending', 'processing']).eq('job_type', 'brainstorm');
+    const isBusy = data?.some(job => job.payload.episode_id === episodeId);
+    setIsWorkerBusy(!!isBusy);
+  };
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
@@ -159,24 +176,18 @@ function BrainstormTab({ episodeId }: { episodeId: number }) {
   };
 
   const finalizeStory = async () => {
-    if (!confirm("Are you ready to finalize this story? This will instruct the AI to generate detailed scripts for all 6 scenes.")) return;
+    if (!confirm("Are you ready to finalize this story? This will instruct the AI to generate a master summary and then automatically trigger detailed scripts for all 6 scenes.")) return;
     
     // Update episode status
     await supabase.from('episodes').update({ status: 'scripting_scenes' }).eq('id', episodeId);
     
-    // Queue up 6 scene generation jobs
-    for(let i=1; i<=6; i++) {
-      // Create a scene record first
-      const { data: sceneData } = await supabase.from('scenes').insert({ episode_id: episodeId, scene_number: i }).select().single();
-      if (sceneData) {
-        // Queue the job
-        await supabase.from('job_queue').insert({
-          job_type: 'scene_script',
-          payload: { episode_id: episodeId, scene_id: sceneData.id, scene_number: i }
-        });
-      }
-    }
-    alert("Script finalizing triggered! Check the individual Scene tabs in a few moments.");
+    // Queue the master finalize job!
+    await supabase.from('job_queue').insert({
+      job_type: 'finalize_episode',
+      payload: { episode_id: episodeId }
+    });
+    
+    alert("Triggered! The AI is summarizing the story. Scene scripts will generate shortly.");
   };
 
   return (
@@ -188,7 +199,15 @@ function BrainstormTab({ episodeId }: { episodeId: number }) {
             <div className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</div>
           </div>
         ))}
-        {messages.length === 0 && (
+        {isWorkerBusy && (
+          <div className="p-4 rounded-xl max-w-[80%] bg-gray-700 border border-gray-600 text-gray-100 self-start rounded-bl-none shadow-sm">
+            <div className="font-bold mb-1 text-xs opacity-75 text-blue-400">Director AI</div>
+            <div className="text-sm italic flex items-center gap-2">
+              <span className="animate-pulse">Thinking... (Worker is processing the job)</span>
+            </div>
+          </div>
+        )}
+        {messages.length === 0 && !isWorkerBusy && (
           <div className="text-center text-gray-400 mt-20 flex flex-col items-center">
             <div className="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mb-4">🎬</div>
             <h2 className="text-xl font-bold text-gray-200 mb-2">Director's Chair</h2>

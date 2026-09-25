@@ -84,8 +84,21 @@ async function runWorker() {
 
   const page = await context.newPage();
   
-  // We ALWAYS use the saved conversation URL for scripting to maintain the overarching context!
-  const targetUrl = authData.conversation_url ? authData.conversation_url : 'https://gemini.google.com/app';
+  let targetUrl = 'https://gemini.google.com/app';
+  let episodeData = null;
+  let sceneData = null;
+  
+  if (pendingJob.job_type === 'brainstorm' || pendingJob.job_type === 'finalize_episode') {
+    // Global Master Chat
+    targetUrl = authData.conversation_url ? authData.conversation_url : 'https://gemini.google.com/app';
+  } else if (pendingJob.job_type === 'scene_script') {
+    // Parallel Scene Chat
+    const { data: ep } = await supabase.from('episodes').select('summary').eq('id', pendingJob.payload.episode_id).single();
+    episodeData = ep;
+    const { data: sc } = await supabase.from('scenes').select('*').eq('id', pendingJob.payload.scene_id).single();
+    sceneData = sc;
+    targetUrl = sceneData?.conversation_url ? sceneData.conversation_url : 'https://gemini.google.com/app';
+  }
   
   console.log(`Navigating to Gemini: ${targetUrl}`);
   await page.goto(targetUrl);
@@ -129,10 +142,25 @@ Your goal is to brainstorm a high-retention 60-second video script with them.
 User's Pitch: ` + promptToType;
       }
     } 
+    else if (pendingJob.job_type === 'finalize_episode') {
+      promptToType = `[SYSTEM AUTOMATION] We have finalized today's episode. 
+Please write a highly detailed summary of the finalized 6-scene story arc so another AI can use it as a system prompt to write the final scripts.
+Wrap your summary perfectly inside a Markdown block like this:
+\`\`\`summary
+<insert summary here>
+\`\`\``;
+    }
     else if (pendingJob.job_type === 'scene_script') {
       const sceneNum = pendingJob.payload.scene_number;
-      promptToType = `[SYSTEM AUTOMATION - Do not chat, just output JSON]
-Based on our approved story arc, please expand **Scene ${sceneNum}** into a highly detailed script for a 10-second video clip.
+      let contextInjection = "";
+      
+      // If this is a fresh chat for this scene, inject the master summary!
+      if (!sceneData?.conversation_url) {
+         contextInjection = `[STORY CONTEXT]\n${episodeData?.summary || 'No summary provided'}\n\n`;
+      }
+      
+      promptToType = contextInjection + `[SYSTEM AUTOMATION - Do not chat, just output JSON]
+Please expand **Scene ${sceneNum}** into a highly detailed script for a 10-second video clip.
 You MUST output your response as a strict JSON block wrapped in \`\`\`json
 {
   "visual_prompt": "Highly detailed, cinematic visual prompt for Veo video generator",
@@ -187,6 +215,23 @@ Do not include any other text outside the JSON block.`;
           status: 'completed'
         });
       } 
+      else if (pendingJob.job_type === 'finalize_episode') {
+        const summaryMatch = responseText.match(/```summary\s*([\s\S]*?)\s*```/i);
+        const summaryText = summaryMatch && summaryMatch[1] ? summaryMatch[1].trim() : responseText;
+        
+        await supabase.from('episodes').update({ summary: summaryText }).eq('id', pendingJob.payload.episode_id);
+        
+        // Start PARALLEL processing by queuing ALL 6 scenes simultaneously!
+        for(let i=1; i<=6; i++) {
+          const { data: newSceneData } = await supabase.from('scenes').insert({ episode_id: pendingJob.payload.episode_id, scene_number: i }).select().single();
+          if (newSceneData) {
+            await supabase.from('job_queue').insert({
+              job_type: 'scene_script',
+              payload: { episode_id: pendingJob.payload.episode_id, scene_id: newSceneData.id, scene_number: i }
+            });
+          }
+        }
+      }
       else if (pendingJob.job_type === 'scene_script') {
         // Extract JSON block using regex
         const jsonMatch = responseText.match(/```json\s*(\{[\s\S]*?\})\s*```/);
@@ -202,7 +247,6 @@ Do not include any other text outside the JSON block.`;
             console.warn("Regex failed to find JSON. Raw response:", responseText);
         }
         
-        // Find max version number to support V1, V2, V3 etc.
         const { data: versions } = await supabase
           .from('scene_versions')
           .select('version_number')
@@ -227,8 +271,13 @@ Do not include any other text outside the JSON block.`;
       // Save New URL
       const currentUrl = page.url();
       if (currentUrl !== targetUrl && currentUrl.includes('/app/')) {
-        console.log(`Saving new conversation URL: ${currentUrl}`);
-        await supabase.from('auth_sessions').update({ conversation_url: currentUrl }).eq('id', 1);
+        if (pendingJob.job_type === 'brainstorm' || pendingJob.job_type === 'finalize_episode') {
+          console.log(`Saving new conversation URL to global auth_sessions: ${currentUrl}`);
+          await supabase.from('auth_sessions').update({ conversation_url: currentUrl }).eq('id', 1);
+        } else if (pendingJob.job_type === 'scene_script') {
+          console.log(`Saving new conversation URL to scene: ${currentUrl}`);
+          await supabase.from('scenes').update({ conversation_url: currentUrl }).eq('id', pendingJob.payload.scene_id);
+        }
       }
       
     } else {

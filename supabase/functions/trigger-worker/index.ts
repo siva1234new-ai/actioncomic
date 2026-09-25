@@ -12,17 +12,19 @@ serve(async (req: Request) => {
     }
 
     // Parse the Webhook payload
-    // Supabase sends { type: 'INSERT', table: 'story_messages', record: { id: 123, ... }, ... }
     const payload = await req.json();
     
-    const record = payload.record;
+    // Support both Supabase UI Webhooks (which wrap in payload.record) 
+    // and our custom Postgres trigger (which sends the row directly)
+    const record = payload.record || payload;
+    
     if (!record || !record.id) {
       return new Response('Invalid payload: Missing record ID', { status: 400 });
     }
 
-    // Check if the message is actually pending and from the user
-    if (record.role !== 'user' || record.status !== 'pending') {
-      return new Response('Ignored: Not a pending user message', { status: 200 });
+    // Check if the job is pending
+    if (record.status !== 'pending' || !record.job_type) {
+      return new Response('Ignored: Not a pending job_queue item', { status: 200 });
     }
 
     const jobId = record.id;
