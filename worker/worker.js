@@ -72,11 +72,21 @@ async function runWorker() {
 
   const browser = await chromium.launch(launchOptions);
 
-  // Sanitize cookies before injecting
+  // Sanitize cookies before injecting - Playwright strictly rejects non-standard fields!
   let sanitizedCookies = authData.cookies_json.map(c => {
-    let sanitized = { ...c };
-    if (sanitized.sameSite) {
-      const lower = sanitized.sameSite.toLowerCase();
+    let sanitized = {
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path || '/',
+      secure: c.secure !== false,
+      httpOnly: c.httpOnly !== false,
+    };
+    if (c.expirationDate) sanitized.expires = c.expirationDate;
+    else if (c.expires) sanitized.expires = c.expires;
+    
+    if (c.sameSite) {
+      const lower = c.sameSite.toLowerCase();
       if (lower === 'no_restriction' || lower === 'none' || lower === 'unspecified') sanitized.sameSite = 'None';
       else if (lower === 'lax') sanitized.sameSite = 'Lax';
       else if (lower === 'strict') sanitized.sameSite = 'Strict';
