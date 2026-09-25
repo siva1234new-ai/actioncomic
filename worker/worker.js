@@ -130,6 +130,17 @@ async function runWorker() {
     await page.waitForSelector(inputSelector, { timeout: 30000 });
     console.log('Gemini loaded. Waiting 3 seconds for old chat history to populate...');
     await page.waitForTimeout(3000);
+    
+    // --- SESSION VALIDATION ---
+    const signInButton = await page.$('text="Sign in"');
+    const isAccountsPage = page.url().includes('accounts.google.com');
+    
+    if (signInButton || isAccountsPage) {
+      console.error("CRITICAL ERROR: Google rejected the cookies! Temporary guest session detected. Please export fresh cookies.");
+      await supabase.from('job_queue').update({ status: 'failed' }).eq('id', pendingJob.id);
+      await browser.close();
+      process.exit(1);
+    }
   } catch (e) {
     console.error("Timeout waiting for Gemini input box. Cookies might be expired.");
     await supabase.from('job_queue').update({ status: 'failed' }).eq('id', pendingJob.id);
