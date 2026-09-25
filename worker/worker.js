@@ -15,7 +15,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 async function runWorker() {
   const jobId = process.env.JOB_ID || process.argv[2];
   let pendingJob;
-  
+
   if (jobId) {
     console.log(`Fetching specific job: ${jobId}`);
     const { data } = await supabase.from('job_queue').select('*').eq('id', jobId).single();
@@ -60,9 +60,9 @@ async function runWorker() {
       '--disable-setuid-sandbox'
     ]
   };
-  
+
   const browser = await chromium.launch(launchOptions);
-  
+
   // Sanitize cookies before injecting
   let sanitizedCookies = authData.cookies_json.map(c => {
     let sanitized = { ...c };
@@ -83,11 +83,11 @@ async function runWorker() {
   });
 
   const page = await context.newPage();
-  
+
   let targetUrl = 'https://gemini.google.com/app';
   let episodeData = null;
   let sceneData = null;
-  
+
   if (pendingJob.job_type === 'brainstorm' || pendingJob.job_type === 'finalize_episode') {
     // Global Master Chat
     targetUrl = authData.conversation_url ? authData.conversation_url : 'https://gemini.google.com/app';
@@ -99,12 +99,12 @@ async function runWorker() {
     sceneData = sc;
     targetUrl = sceneData?.conversation_url ? sceneData.conversation_url : 'https://gemini.google.com/app';
   }
-  
+
   console.log(`Navigating to Gemini: ${targetUrl}`);
   await page.goto(targetUrl);
-  
+
   const inputSelector = 'div[contenteditable="true"]';
-  
+
   try {
     await page.waitForSelector(inputSelector, { timeout: 30000 });
     console.log('Gemini loaded. Waiting 3 seconds for old chat history to populate...');
@@ -121,13 +121,13 @@ async function runWorker() {
     const expectedResponseCount = preSendElements.length + 1;
 
     let promptToType = "";
-    
+
     // -------------------------------------------------------------
     // ROUTING LOGIC based on job_type
     // -------------------------------------------------------------
     if (pendingJob.job_type === 'brainstorm') {
       promptToType = pendingJob.payload.prompt;
-      
+
       if (!authData.conversation_url) {
         console.log("New chat detected. Injecting Director System Prompt...");
         promptToType = `[SYSTEM INSTRUCTION]
@@ -141,7 +141,7 @@ Your goal is to brainstorm a high-retention 60-second video script with them.
 
 User's Pitch: ` + promptToType;
       }
-    } 
+    }
     else if (pendingJob.job_type === 'finalize_episode') {
       promptToType = `[SYSTEM AUTOMATION] We have finalized today's episode. 
 Please write a highly detailed summary of the finalized 6-scene story arc so another AI can use it as a system prompt to write the final scripts.
@@ -153,13 +153,18 @@ Wrap your summary perfectly inside a Markdown block like this:
     else if (pendingJob.job_type === 'scene_script') {
       const sceneNum = pendingJob.payload.scene_number;
       let contextInjection = "";
-      
+
       // If this is a fresh chat for this scene, inject the master summary!
       if (!sceneData?.conversation_url) {
-         contextInjection = `[STORY CONTEXT]\n${episodeData?.summary || 'No summary provided'}\n\n`;
+        contextInjection = `[STORY CONTEXT]\n${episodeData?.summary || 'No summary provided'}\n\n`;
       }
       
-      promptToType = contextInjection + `[SYSTEM AUTOMATION - Do not chat, just output JSON]
+      let modifier = "";
+      if (pendingJob.payload.prompt) {
+        modifier = `[USER FEEDBACK FOR MODIFICATION]\n${pendingJob.payload.prompt}\n\nPlease regenerate the scene incorporating this feedback.\n\n`;
+      }
+
+      promptToType = contextInjection + modifier + `[SYSTEM AUTOMATION - Do not chat, just output JSON]
 Please expand **Scene ${sceneNum}** into a highly detailed script for a 10-second video clip.
 You MUST output your response as a strict JSON block wrapped in \`\`\`json
 {
@@ -169,7 +174,7 @@ You MUST output your response as a strict JSON block wrapped in \`\`\`json
 \`\`\`
 Do not include any other text outside the JSON block.`;
     }
-    
+
     // Type the prompt
     await page.fill(inputSelector, promptToType);
     await page.keyboard.press('Enter');
@@ -177,16 +182,16 @@ Do not include any other text outside the JSON block.`;
 
     let lastText = "";
     let stableCount = 0;
-    
+
     // Long polling loop
     for (let i = 0; i < 1200; i++) {
       await page.waitForTimeout(100);
       const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
-      
+
       if (responseElements.length >= expectedResponseCount) {
         let currentText = await responseElements[responseElements.length - 1].innerText();
         currentText = currentText.trim();
-        
+
         if (currentText.length > 0 && currentText === lastText) {
           stableCount++;
           if (stableCount >= 30) break; // 3 seconds stable
@@ -197,13 +202,13 @@ Do not include any other text outside the JSON block.`;
       }
     }
 
-    const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]'); 
+    const responseElements = await page.$$('.message-content, model-response, [data-test-id="model-response"]');
     if (responseElements.length > 0) {
       let responseText = await responseElements[responseElements.length - 1].innerText();
       responseText = responseText.replace(/^Gemini said\s*/i, '').trim();
-      
+
       console.log(`Gemini Replied: ${responseText.substring(0, 100)}...`);
-      
+
       // -------------------------------------------------------------
       // PROCESS RESPONSE BASED ON JOB TYPE
       // -------------------------------------------------------------
@@ -214,15 +219,15 @@ Do not include any other text outside the JSON block.`;
           content: responseText,
           status: 'completed'
         });
-      } 
+      }
       else if (pendingJob.job_type === 'finalize_episode') {
         const summaryMatch = responseText.match(/```summary\s*([\s\S]*?)\s*```/i);
         const summaryText = summaryMatch && summaryMatch[1] ? summaryMatch[1].trim() : responseText;
-        
+
         await supabase.from('episodes').update({ summary: summaryText }).eq('id', pendingJob.payload.episode_id);
-        
+
         // Start PARALLEL processing by queuing ALL 6 scenes simultaneously!
-        for(let i=1; i<=6; i++) {
+        for (let i = 1; i <= 6; i++) {
           const { data: newSceneData } = await supabase.from('scenes').insert({ episode_id: pendingJob.payload.episode_id, scene_number: i }).select().single();
           if (newSceneData) {
             await supabase.from('job_queue').insert({
@@ -233,29 +238,29 @@ Do not include any other text outside the JSON block.`;
         }
       }
       else if (pendingJob.job_type === 'scene_script') {
-        // Extract JSON block using regex
-        const jsonMatch = responseText.match(/```json\s*(\{[\s\S]*?\})\s*```/);
+        // Extract JSON block (Gemini UI often strips markdown backticks in innerText, so we look for { } brackets)
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
         let parsedJson = { visual_prompt: "Error parsing response.", voiceover: "Error parsing response." };
-        
-        if (jsonMatch && jsonMatch[1]) {
+
+        if (jsonMatch && jsonMatch[0]) {
           try {
-            parsedJson = JSON.parse(jsonMatch[1]);
+            parsedJson = JSON.parse(jsonMatch[0]);
           } catch (e) {
             console.error("Failed to parse JSON from Gemini.", e);
           }
         } else {
-            console.warn("Regex failed to find JSON. Raw response:", responseText);
+          console.warn("Regex failed to find JSON. Raw response:", responseText);
         }
-        
+
         const { data: versions } = await supabase
           .from('scene_versions')
           .select('version_number')
           .eq('scene_id', pendingJob.payload.scene_id)
           .order('version_number', { ascending: false })
           .limit(1);
-          
+
         const nextVersion = versions && versions.length > 0 ? versions[0].version_number + 1 : 1;
-        
+
         await supabase.from('scene_versions').insert({
           scene_id: pendingJob.payload.scene_id,
           version_number: nextVersion,
@@ -267,7 +272,7 @@ Do not include any other text outside the JSON block.`;
 
       // Mark Job as Completed
       await supabase.from('job_queue').update({ status: 'completed' }).eq('id', pendingJob.id);
-      
+
       // Save New URL
       const currentUrl = page.url();
       if (currentUrl !== targetUrl && currentUrl.includes('/app/')) {
@@ -279,7 +284,7 @@ Do not include any other text outside the JSON block.`;
           await supabase.from('scenes').update({ conversation_url: currentUrl }).eq('id', pendingJob.payload.scene_id);
         }
       }
-      
+
     } else {
       console.log("Could not find response element.");
       await supabase.from('job_queue').update({ status: 'failed' }).eq('id', pendingJob.id);

@@ -273,6 +273,23 @@ function SceneTab({ episodeId, sceneNumber }: { episodeId: number, sceneNumber: 
 
   const currentVersion = versions.find(v => v.version_number === activeV);
 
+  const modifyScript = async () => {
+    const feedback = prompt("What would you like to change in this scene?");
+    if (!feedback) return;
+    
+    // Add a job to regenerate the scene with feedback
+    await supabase.from('job_queue').insert({
+      job_type: 'scene_script',
+      payload: { 
+        episode_id: episodeId, 
+        scene_id: scene.id, 
+        scene_number: sceneNumber,
+        prompt: feedback
+      }
+    });
+    alert("Modification requested! V" + (versions.length + 1) + " will generate shortly.");
+  };
+
   return (
     <div className="flex flex-col h-full bg-gray-800 p-6 overflow-y-auto">
       {/* Version Tabs */}
@@ -301,7 +318,7 @@ function SceneTab({ episodeId, sceneNumber }: { episodeId: number, sceneNumber: 
         </div>
         
         <div className="mt-6 flex justify-end gap-3">
-          <button className="px-4 py-2 bg-gray-700 text-white text-sm font-medium rounded hover:bg-gray-600">Modify Script</button>
+          <button onClick={modifyScript} className="px-4 py-2 bg-gray-700 text-white text-sm font-medium rounded hover:bg-gray-600">Modify Script</button>
           <button className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded hover:bg-green-700 shadow-lg shadow-green-900/20">Approve Script & Generate Images</button>
         </div>
       </div>
