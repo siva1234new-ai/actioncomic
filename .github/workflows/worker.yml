@@ -36,7 +36,7 @@ jobs:
       - name: Route Traffic through Phone
         run: |
           echo "Pinging the Android Phone to ensure it is reachable over Tailscale..."
-          tailscale ping 100.109.173.64 || true
+          tailscale ping -c 1 100.109.173.64 || true
           echo "Setting Android Phone as the Exit Node..."
           sudo tailscale set --exit-node=100.109.173.64
           echo "Routing complete! Verifying new public IP..."
