@@ -33,7 +33,7 @@ jobs:
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-      - name: Route Traffic (Primary: Laptop, Fallback: Phone)
+      - name: Route Traffic - Primary Laptop, Fallback Phone
         run: |
           set -x
           LAPTOP_IP="100.124.114.36" # <-- PLEASE REPLACE THIS WITH YOUR LAPTOP'S TAILSCALE IP
