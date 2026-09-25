@@ -35,12 +35,13 @@ jobs:
 
       - name: Route Traffic through Phone
         run: |
+          set -x
           echo "Pinging the Android Phone to ensure it is reachable over Tailscale..."
           tailscale ping -c 1 100.109.173.64 || true
           echo "Setting Android Phone as the Exit Node..."
           sudo tailscale set --exit-node=100.109.173.64
           echo "Routing complete! Verifying new public IP..."
-          curl -4 ifconfig.me
+          curl -4 --connect-timeout 10 ifconfig.me || echo "CURL TIMED OUT!"
 
       - name: Run Worker
         working-directory: ./worker
