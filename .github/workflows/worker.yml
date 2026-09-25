@@ -28,6 +28,12 @@ jobs:
         working-directory: ./worker
         run: npx playwright install --with-deps chromium
 
+      - name: Connect to Tailscale (Mobile Exit Node)
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          args: --exit-node=100.109.173.64
+
       - name: Run Worker
         working-directory: ./worker
         env:
