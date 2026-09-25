@@ -183,13 +183,15 @@ I need you to output your response as a strict JSON block wrapped in \`\`\`json
 Please do not include any other text outside the JSON block.`;
     }
 
-    // Stealth: Simulate human interaction instead of instant DOM injection
+    // Stealth: Focus the input box naturally
     console.log(`[Stealth] Focusing input box...`);
     await page.click(inputSelector);
     await page.waitForTimeout(Math.floor(Math.random() * 500) + 300);
     
-    console.log(`[Stealth] Simulating human typing for ${pendingJob.job_type}...`);
-    await page.type(inputSelector, promptToType, { delay: Math.floor(Math.random() * 4) + 1 });
+    console.log(`[Stealth] Simulating human pasting (Ctrl+V) for ${pendingJob.job_type}...`);
+    // We MUST use fill() because page.type() hits the Enter key every time it sees a \n (newline), which prematurely submits the chat!
+    // page.fill() is exactly equivalent to a human pressing Ctrl+V, which is organic.
+    await page.fill(inputSelector, promptToType);
     
     await page.waitForTimeout(Math.floor(Math.random() * 500) + 300);
     await page.keyboard.press('Enter');
