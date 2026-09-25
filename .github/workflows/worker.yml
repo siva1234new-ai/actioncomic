@@ -32,7 +32,15 @@ jobs:
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          args: --exit-node=100.109.173.64
+
+      - name: Route Traffic through Phone
+        run: |
+          echo "Pinging the Android Phone to ensure it is reachable over Tailscale..."
+          tailscale ping 100.109.173.64 || true
+          echo "Setting Android Phone as the Exit Node..."
+          sudo tailscale set --exit-node=100.109.173.64
+          echo "Routing complete! Verifying new public IP..."
+          curl -4 ifconfig.me
 
       - name: Run Worker
         working-directory: ./worker
