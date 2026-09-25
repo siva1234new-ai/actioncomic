@@ -50,14 +50,14 @@ jobs:
           LAPTOP_IP="100.124.114.36" # <-- PLEASE REPLACE THIS WITH YOUR LAPTOP'S TAILSCALE IP
           MOBILE_IP="100.109.173.64"
           
-          # We avoid bash pipes here because they can cause file descriptor hangs in CI environments
-          timeout 5s tailscale ping -c 1 --until-direct=false $LAPTOP_IP > ping_laptop.txt 2>&1 || true
+          # We use SIGKILL to brutally murder the ping process if it freezes and ignores standard timeouts
+          timeout -s SIGKILL 5s tailscale ping -c 1 --until-direct=false $LAPTOP_IP > ping_laptop.txt 2>&1 || true
           
           if grep -q -i "pong" ping_laptop.txt; then
             echo "Laptop is awake! Setting Laptop as Exit Node..."
             sudo tailscale set --exit-node=$LAPTOP_IP
           else
-            timeout 5s tailscale ping -c 1 --until-direct=false $MOBILE_IP > ping_mobile.txt 2>&1 || true
+            timeout -s SIGKILL 5s tailscale ping -c 1 --until-direct=false $MOBILE_IP > ping_mobile.txt 2>&1 || true
             if grep -q -i "pong" ping_mobile.txt; then
               echo "Laptop unreachable. Falling back to Android Phone..."
               sudo tailscale set --exit-node=$MOBILE_IP
