@@ -1,5 +1,8 @@
 require('dotenv').config();
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
+chromium.use(stealth);
+
 const { createClient } = require('@supabase/supabase-js');
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -50,8 +53,14 @@ async function runWorker() {
     process.exit(1);
   }
 
+  // --- Anti-Detection Jitter ---
+  // Stagger 6 parallel workers so they don't hit Google at the exact same millisecond
+  const jitterMs = Math.floor(Math.random() * 8000) + 2000;
+  console.log(`[Stealth] Waiting for ${jitterMs}ms jitter before launch...`);
+  await new Promise(r => setTimeout(r, jitterMs));
+
   // --- Browser Launch ---
-  console.log("Launching browser...");
+  console.log("Launching browser with Stealth Plugin...");
   let launchOptions = {
     headless: false,
     args: [
@@ -174,8 +183,15 @@ I need you to output your response as a strict JSON block wrapped in \`\`\`json
 Please do not include any other text outside the JSON block.`;
     }
 
-    // Type the prompt
-    await page.fill(inputSelector, promptToType);
+    // Stealth: Simulate human interaction instead of instant DOM injection
+    console.log(`[Stealth] Focusing input box...`);
+    await page.click(inputSelector);
+    await page.waitForTimeout(Math.floor(Math.random() * 500) + 300);
+    
+    console.log(`[Stealth] Simulating human typing for ${pendingJob.job_type}...`);
+    await page.type(inputSelector, promptToType, { delay: Math.floor(Math.random() * 4) + 1 });
+    
+    await page.waitForTimeout(Math.floor(Math.random() * 500) + 300);
     await page.keyboard.press('Enter');
     console.log(`Sent [${pendingJob.job_type}] to Gemini. Waiting for response...`);
 
