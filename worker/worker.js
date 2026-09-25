@@ -156,23 +156,22 @@ Wrap your summary perfectly inside a Markdown block like this:
 
       // If this is a fresh chat for this scene, inject the master summary!
       if (!sceneData?.conversation_url) {
-        contextInjection = `[STORY CONTEXT]\n${episodeData?.summary || 'No summary provided'}\n\n`;
+        contextInjection = `Here is the master story summary for our episode:\n${episodeData?.summary || '(No summary provided for this old episode)'}\n\n`;
       }
       
       let modifier = "";
       if (pendingJob.payload.prompt) {
-        modifier = `[USER FEEDBACK FOR MODIFICATION]\n${pendingJob.payload.prompt}\n\nPlease regenerate the scene incorporating this feedback.\n\n`;
+        modifier = `Please incorporate this feedback into the scene: ${pendingJob.payload.prompt}\n\n`;
       }
 
-      promptToType = contextInjection + modifier + `[SYSTEM AUTOMATION - Do not chat, just output JSON]
-Please expand **Scene ${sceneNum}** into a highly detailed script for a 10-second video clip.
-You MUST output your response as a strict JSON block wrapped in \`\`\`json
+      promptToType = contextInjection + modifier + `Please expand **Scene ${sceneNum}** into a highly detailed script for a 10-second video clip.
+I need you to output your response as a strict JSON block wrapped in \`\`\`json
 {
   "visual_prompt": "Highly detailed, cinematic visual prompt for Veo video generator",
   "voiceover": "The exact voiceover text (max 15 words)"
 }
 \`\`\`
-Do not include any other text outside the JSON block.`;
+Please do not include any other text outside the JSON block.`;
     }
 
     // Type the prompt
