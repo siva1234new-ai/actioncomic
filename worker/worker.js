@@ -84,7 +84,13 @@ async function runWorker() {
     return sanitized;
   });
 
-  let context = await browser.newContext();
+  // We MUST spoof a standard Windows Chrome User-Agent!
+  // If Google sees a Headless Linux User-Agent trying to use Windows cookies, it instantly deletes the cookies for security!
+  let context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    viewport: { width: 1366, height: 768 }
+  });
+  
   await context.addCookies(sanitizedCookies);
 
   const page = await context.newPage();
