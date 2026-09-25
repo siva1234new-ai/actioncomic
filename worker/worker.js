@@ -84,12 +84,8 @@ async function runWorker() {
     return sanitized;
   });
 
-  let context = await browser.newContext({
-    storageState: {
-      cookies: sanitizedCookies,
-      origins: []
-    }
-  });
+  let context = await browser.newContext();
+  await context.addCookies(sanitizedCookies);
 
   const page = await context.newPage();
 
